@@ -66,11 +66,9 @@ async def configs(q:str='',x_telegram_init_data:str|None=Header(default=None)):
 async def subscriptions(x_telegram_init_data:str|None=Header(default=None)):
     uid=validate(x_telegram_init_data); await entitlement(uid)
     async with Session() as db:
-        rows=(await db.execute(select(Subscription).where(Subscription.telegram_id==uid,Subscription.enabled.is_(True)).order_by(Subscription.id.desc()))).scalars().all()
-        out=[]
+        rows=(await db.execute(select(Subscription).where(Subscription.telegram_id==uid,Subscription.enabled.is_(True)).order_by(Subscription.id.desc()))).scalars().all(); out=[]
         for s in rows:
-            count=len((await db.execute(select(Node.id).where(Node.subscription_id==s.id,Node.enabled.is_(True)))).scalars().all())
-            out.append({'id':s.id,'name':s.name,'nodes':count,'updated_at':s.updated_at.isoformat() if s.updated_at else None})
+            count=len((await db.execute(select(Node.id).where(Node.subscription_id==s.id,Node.enabled.is_(True)))).scalars().all()); out.append({'id':s.id,'name':s.name,'nodes':count,'updated_at':s.updated_at.isoformat() if s.updated_at else None})
     return {'subscriptions':out}
 
 @app.post('/api/subscriptions')
@@ -82,8 +80,7 @@ async def create_subscription(body:SubscriptionCreate,x_telegram_init_data:str|N
     async with Session() as db:
         existing=(await db.execute(select(Subscription).where(Subscription.telegram_id==uid,Subscription.enabled.is_(True),Subscription.name==body.name.strip()))).scalar_one_or_none()
         if existing: raise HTTPException(409,'A subscription with this name already exists')
-        row=Subscription(telegram_id=uid,name=body.name.strip(),url_encrypted=SecretBox().encrypt(url),enabled=True)
-        db.add(row); await db.commit(); await db.refresh(row); sid=row.id
+        row=Subscription(telegram_id=uid,name=body.name.strip(),url_encrypted=SecretBox().encrypt(url),enabled=True); db.add(row); await db.commit(); await db.refresh(row); sid=row.id
     try: imported=await sync_subscription(sid)
     except Exception as exc:
         async with Session() as db:
@@ -113,8 +110,7 @@ async def delete_subscription(sid:int,x_telegram_init_data:str|None=Header(defau
     async with Session() as db:
         row=await db.get(Subscription,sid)
         if not row or row.telegram_id!=uid: raise HTTPException(404,'Subscription not found')
-        row.enabled=False
-        nodes=(await db.execute(select(Node).where(Node.subscription_id==sid))).scalars().all()
+        row.enabled=False; nodes=(await db.execute(select(Node).where(Node.subscription_id==sid))).scalars().all()
         for n in nodes: n.enabled=False
         await db.commit()
     return {'ok':True}
@@ -127,8 +123,7 @@ async def create_config(body:ConfigCreate,x_telegram_init_data:str|None=Header(d
     if protocol not in {'vless','vmess','trojan','shadowsocks','ss'}: raise HTTPException(400,'Unsupported protocol')
     token=secrets.token_urlsafe(48)
     async with Session() as db:
-        row=MonitorConfig(telegram_id=uid,name=body.name.strip(),protocol=protocol,config_encrypted=SecretBox().encrypt(json.dumps(body.config,separators=(',',':'))),probe_token=token)
-        db.add(row); await db.commit(); await db.refresh(row)
+        row=MonitorConfig(telegram_id=uid,name=body.name.strip(),protocol=protocol,config_encrypted=SecretBox().encrypt(json.dumps(body.config,separators=(',',':'))),probe_token=token); db.add(row); await db.commit(); await db.refresh(row)
     return {'id':row.id,'name':row.name,'protocol':row.protocol,'probe_token':token}
 
 @app.delete('/api/configs/{cid}')
@@ -157,11 +152,7 @@ async def probe_report(body:ProbeReport):
 
 @app.post('/api/seller/entitlements')
 async def seller_entitlement(body:SellerEntitlement):
-    """Internal local integration endpoint. No Seller API token is required.
-
-    The installer configures Seller to call Monitor through 127.0.0.1, so
-    this endpoint is intentionally not a public credential-based API.
-    """
+    """Internal local integration endpoint; no Seller API token is required."""
     now=datetime.now(timezone.utc); expiry=now+timedelta(days=body.days)
     async with Session() as db:
         row=(await db.execute(select(MonitorEntitlement).where(MonitorEntitlement.telegram_id==body.telegram_id))).scalar_one_or_none()
@@ -173,7 +164,7 @@ async def seller_entitlement(body:SellerEntitlement):
 @app.get('/api/nodes')
 async def nodes():
     async with Session() as db: rows=(await db.execute(select(Node).where(Node.enabled.is_(True)).order_by(Node.id))).scalars().all()
-    return {'nodes':[{'id':n.id,'name':n.name,'protocol':n.protocol,'status':n.status,'latency_ms':n.latency_ms,'last_checked':n.last_checked.isoformat() if n.last_checked else None} for n in rows]
+    return {'nodes':[{'id':n.id,'name':n.name,'protocol':n.protocol,'status':n.status,'latency_ms':n.latency_ms,'last_checked':n.last_checked.isoformat() if n.last_checked else None} for n in rows]}
 
 @app.get('/api/view',response_class=HTMLResponse)
 async def view():
