@@ -3,7 +3,8 @@ from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config=SettingsConfigDict(env_file='.env',extra='ignore',case_sensitive=False)
-    app_name:str='V2Ray Monitor'; database_url:str='sqlite+aiosqlite:///./data/monitor.db'; bot_token:str=''; admin_ids:str=''; webapp_url:str='http://127.0.0.1:8000'; encryption_key:str=''; xray_binary:str='/usr/local/bin/xray'
+    app_name:str='V2Ray Monitor'; database_url:str='sqlite+aiosqlite:///./data/monitor.db'; bot_token:str=''; admin_ids:str=''; webapp_url:str='http://127.0.0.1:8000'; encryption_key:str=''; xray_binary:str='/usr/local/bin/xray'; web_port:int=8000
+    seller_api_token:str=''
     probe_timeout:float=8.0; probe_interval:int=60; probe_concurrency:int=10; sync_interval:int=300; max_subscription_bytes:int=5_000_000; max_nodes_per_subscription:int=2000
     force_join_enabled:bool=False; force_join_channel:str=''; force_join_url:str=''; card_number:str=''; card_holder:str=''
     @field_validator('probe_timeout')
