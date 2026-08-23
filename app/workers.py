@@ -7,7 +7,7 @@ from sqlalchemy import select
 
 from .config import get_settings
 from .crypto import SecretBox
-from .db import Session, init_db
+from .db import Session
 from .models import Node, Subscription
 from .probe import XrayProbe
 from .sync import sync_subscription
@@ -16,7 +16,6 @@ _SYNC_LOCK = asyncio.Lock()
 
 
 async def sync_loop() -> None:
-    await init_db()
     while True:
         try:
             async with _SYNC_LOCK:
@@ -35,7 +34,6 @@ async def sync_loop() -> None:
 
 
 async def probe_loop() -> None:
-    await init_db()
     while True:
         try:
             async with Session() as db:
