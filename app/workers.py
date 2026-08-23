@@ -1,34 +1,87 @@
-import asyncio, logging
-from .db import init_db, Session
-from .models import Subscription, Node
-from .config import get_settings
-from .sync import sync_subscription
-from .crypto import SecretBox
-from .probe import XrayProbe
-from sqlalchemy import select
+import asyncio
 import json
-async def sync_loop():
+import logging
+
+from sqlalchemy import select
+
+from .config import get_settings
+from .crypto import SecretBox
+from .db import Session, init_db
+from .models import Node, Subscription
+from .probe import XrayProbe
+from .sync import sync_subscription
+
+_SYNC_LOCK = asyncio.Lock()
+
+
+async def sync_loop() -> None:
+    await init_db()
     while True:
         try:
-            async with Session() as db: subs=(await db.execute(select(Subscription).where(Subscription.enabled==True))).scalars().all()
-            for s in subs:
-                try: await sync_subscription(s.id)
-                except Exception: logging.exception('sync failed')
-        except Exception: logging.exception('sync loop failed')
-        await asyncio.sleep(get_settings().sync_interval)
-async def probe_loop():
+            async with _SYNC_LOCK:
+                async with Session() as db:
+                    subs = (
+                        await db.execute(
+                            select(Subscription).where(Subscription.enabled.is_(True))
+                        )
+                    ).scalars().all()
+                for sub in subs:
+                    try:
+                        await sync_subscription(sub.id)
+                    except Exception:
+                        logging.exception("subscription sync failed: id=%s", sub.id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.exception("sync loop failed")
+        await asyncio.sleep(max(10, get_settings().sync_interval))
+
+
+async def probe_loop() -> None:
+    await init_db()
     while True:
         try:
-            async with Session() as db: nodes=(await db.execute(select(Node).where(Node.enabled==True))).scalars().all()
-            sem=asyncio.Semaphore(10)
-            async def one(n):
+            async with Session() as db:
+                nodes = (
+                    await db.execute(select(Node).where(Node.enabled.is_(True)))
+                ).scalars().all()
+            sem = asyncio.Semaphore(10)
+
+            async def one(node_id: int, encrypted: str, protocol: str) -> None:
                 async with sem:
                     try:
-                        c=json.loads(SecretBox().decrypt(n.config_encrypted)); x=type('N',(),{})(); x.config=c; x.protocol=n.protocol
-                        ms=await asyncio.wait_for(XrayProbe().probe(x),timeout=get_settings().probe_timeout+4); status='online'
-                    except Exception: ms=None; status='offline'
+                        config = json.loads(SecretBox().decrypt(encrypted))
+                        probe_node = type("ProbeNode", (), {})()
+                        probe_node.config = config
+                        probe_node.protocol = protocol
+                        ms = await asyncio.wait_for(
+                            XrayProbe().probe(probe_node),
+                            timeout=get_settings().probe_timeout + 5,
+                        )
+                        status = "online"
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        ms = None
+                        status = "offline"
                     async with Session() as db2:
-                        row=await db2.get(Node,n.id); row.status=status; row.latency_ms=ms; row.failures=0 if ms is not None else row.failures+1; await db2.commit()
-            await asyncio.gather(*(one(n) for n in nodes))
-        except Exception: logging.exception('probe loop failed')
-        await asyncio.sleep(max(30,get_settings().sync_interval))
+                        row = await db2.get(Node, node_id)
+                        # A concurrent sync may legitimately have removed this node.
+                        if row is None:
+                            return
+                        row.status = status
+                        row.latency_ms = ms
+                        row.failures = 0 if ms is not None else row.failures + 1
+                        from datetime import datetime, timezone
+                        row.last_checked = datetime.now(timezone.utc)
+                        await db2.commit()
+
+            await asyncio.gather(
+                *(one(n.id, n.config_encrypted, n.protocol) for n in nodes),
+                return_exceptions=False,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.exception("probe loop failed")
+        await asyncio.sleep(max(10, get_settings().probe_interval))
