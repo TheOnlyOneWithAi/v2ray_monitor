@@ -1,223 +1,130 @@
-"""Telegram admin control plane. No secret node data is ever sent to users."""
-import io
-import logging
-
-from aiogram import Bot, Dispatcher, Router
+from aiogram import Bot,Dispatcher,Router
 from aiogram.filters import Command
-from aiogram.types import Document, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
+from aiogram.types import Message,InlineKeyboardButton,InlineKeyboardMarkup,WebAppInfo
 from sqlalchemy import select
-
 from .config import get_settings
 from .crypto import SecretBox
 from .db import Session
-from .models import Node, Subscription, Template
+from .models import Subscription,Node,Template
 from .sync import sync_subscription
-
-router = Router()
-pending: dict[int, str] = {}
-MAX_TEMPLATE = 100_000
-
-
-def is_admin(message: Message) -> bool:
-    return bool(message.from_user and message.from_user.id in get_settings().admins)
-
-
-def menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Open Monitor", web_app=WebAppInfo(url=get_settings().webapp_url))]])
-
-
-async def denied(message: Message) -> None:
-    await message.answer("Access denied.")
-
-
-@router.message(Command("start"))
-async def start(message: Message):
-    if not is_admin(message):
-        return await denied(message)
-    await message.answer("V2Ray Monitor admin\n\n/addsub Name | https://subscription\n/list\n/sync [id]\n/delsub ID\n/toggle ID\n/nodes [id]\n/settemplate (then send HTML or a .html file)\n/template\n/help", reply_markup=menu())
-
-
-@router.message(Command("help"))
-async def help_command(message: Message):
-    if is_admin(message):
-        await message.answer("/addsub Name | HTTPS URL\n/list\n/sync [subscription_id]\n/delsub ID\n/toggle ID\n/nodes [subscription_id]\n/settemplate\n/template")
-
-
-@router.message(Command("addsub"))
-async def addsub(message: Message):
-    if not is_admin(message):
-        return
-    raw = (message.text or "").partition(" ")[2].strip()
-    if "|" not in raw:
-        return await message.answer("Usage: /addsub Name | https://subscription")
-    name, url = (part.strip() for part in raw.split("|", 1))
-    if not name or len(name) > 120 or not url.startswith("https://"):
-        return await message.answer("A name and an HTTPS URL are required.")
-    try:
-        box = SecretBox()
-        async with Session() as db:
-            sub = Subscription(name=name, url_encrypted=box.encrypt(url))
-            db.add(sub)
-            await db.commit()
-            sub_id = sub.id
-        count = await sync_subscription(sub_id)
-        await message.answer(f"Added subscription #{sub_id}. Parsed {count} nodes.")
-    except Exception:
-        logging.exception("add subscription failed")
-        await message.answer("Subscription could not be added or synced. Check server logs.")
-
-
-@router.message(Command("list"))
-async def list_subscriptions(message: Message):
-    if not is_admin(message):
-        return
+router=Router();pending={};MAX_TEMPLATE=100_000
+def admin(m):return bool(m.from_user and m.from_user.id in get_settings().admins)
+def menu():
+    s=get_settings();return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='🌐 Open Monitor',web_app=WebAppInfo(url=s.webapp_url))]])
+@router.message(Command('start'))
+async def start(m:Message):
+    s=get_settings()
+    if admin(m):return await m.answer('V2Ray Monitor Admin\n/addsub Name | https://subscription\n/list\n/sync [id]\n/delsub ID\n/toggle ID\n/nodes [id]\n/settemplate\n/setjoin @channel | URL\n/setjoinon\n/setjoinoff\n/setcard NUMBER | HOLDER\n/settings',reply_markup=menu())
+    await m.answer('🌐 V2Ray Monitor\nبرای مشاهده وضعیت کانفیگ‌ها از دکمه زیر استفاده کنید.',reply_markup=menu())
+@router.message(Command('addsub'))
+async def addsub(m):
+    if not admin(m):return
+    raw=(m.text or '').partition(' ')[2]
+    if '|' not in raw:return await m.answer('Usage: /addsub Name | https://subscription')
+    name,url=(x.strip() for x in raw.split('|',1))
+    if not name or len(name)>120 or not url.startswith('https://'):return await m.answer('Name and HTTPS URL required.')
     async with Session() as db:
-        rows = (await db.execute(select(Subscription).order_by(Subscription.id))).scalars().all()
-    if not rows:
-        return await message.answer("No subscriptions.")
-    await message.answer("\n".join(f"#{x.id} {x.name} — {'ON' if x.enabled else 'OFF'}" for x in rows))
-
-
-@router.message(Command("sync"))
-async def sync_command(message: Message):
-    if not is_admin(message):
-        return
-    arg = (message.text or "").partition(" ")[2].strip()
-    try:
-        async with Session() as db:
-            rows = (await db.execute(select(Subscription).order_by(Subscription.id))).scalars().all()
-        if arg:
-            sub_id = int(arg)
-            rows = [x for x in rows if x.id == sub_id]
-        total = 0
-        for sub in rows:
-            try:
-                total += await sync_subscription(sub.id)
-            except Exception:
-                logging.exception("subscription sync failed: id=%s", sub.id)
-        await message.answer(f"Sync complete. Parsed/updated {total} nodes.")
-    except ValueError:
-        await message.answer("Invalid subscription ID.")
-
-
-@router.message(Command("delsub"))
-async def delete_subscription(message: Message):
-    if not is_admin(message):
-        return
-    try:
-        sub_id = int((message.text or "").partition(" ")[2].strip())
-    except ValueError:
-        return await message.answer("Usage: /delsub ID")
+        x=Subscription(name=name,url_encrypted=SecretBox().encrypt(url));db.add(x);await db.commit();sid=x.id
+    try:n=await sync_subscription(sid);await m.answer(f'Added #{sid}; {n} nodes.')
+    except Exception:await m.answer('Added, but sync failed; use /sync later.')
+@router.message(Command('list'))
+async def listing(m):
+    if not admin(m):return
+    async with Session() as db:r=(await db.execute(select(Subscription).order_by(Subscription.id))).scalars().all()
+    await m.answer('\n'.join(f'#{x.id} {x.name} — {"ON" if x.enabled else "OFF"}' for x in r) or 'No subscriptions.')
+@router.message(Command('sync'))
+async def sync(m):
+    if not admin(m):return
+    arg=(m.text or '').partition(' ')[2].strip();total=0
+    async with Session() as db:r=(await db.execute(select(Subscription).order_by(Subscription.id))).scalars().all()
+    if arg:
+        try:r=[x for x in r if x.id==int(arg)]
+        except ValueError:return await m.answer('Invalid ID.')
+    for x in r:
+        try:total+=await sync_subscription(x.id)
+        except Exception:pass
+    await m.answer(f'Sync complete: {total} nodes.')
+@router.message(Command('delsub'))
+async def delete(m):
+    if not admin(m):return
+    try:sid=int((m.text or '').partition(' ')[2])
+    except ValueError:return await m.answer('Usage: /delsub ID')
+    async with Session() as db:x=await db.get(Subscription,sid);await db.delete(x) if x else None;await db.commit()
+    await m.answer(f'Subscription #{sid} deleted.' if x else 'Subscription not found.')
+@router.message(Command('toggle'))
+async def toggle(m):
+    if not admin(m):return
+    try:sid=int((m.text or '').partition(' ')[2])
+    except ValueError:return await m.answer('Usage: /toggle ID')
     async with Session() as db:
-        sub = await db.get(Subscription, sub_id)
-        if not sub:
-            return await message.answer("Subscription not found.")
-        await db.delete(sub)
+        x=await db.get(Subscription,sid)
+        if not x:return await m.answer('Not found.')
+        x.enabled=not x.enabled;await db.commit()
+    await m.answer(f'#{sid}: {"ON" if x.enabled else "OFF"}')
+@router.message(Command('nodes'))
+async def nodes(m):
+    if not admin(m):return
+    arg=(m.text or '').partition(' ')[2].strip()
+    async with Session() as db:r=(await db.execute(select(Node).order_by(Node.id))).scalars().all()
+    if arg:
+        try:r=[x for x in r if x.subscription_id==int(arg)]
+        except ValueError:return await m.answer('Invalid ID.')
+    on=sum(x.status=='online' for x in r);await m.answer(f'Nodes: {len(r)}\nOnline: {on}\nOffline: {len(r)-on}')
+async def setv(m,key):
+    if not admin(m):return
+    raw=(m.text or '').partition(' ')[2]
+    if '|' not in raw:return await m.answer('Use VALUE | SECOND VALUE')
+    a,b=(x.strip() for x in raw.split('|',1))
+    async with Session() as db:
+        name='__setting__:'+key;t=(await db.execute(select(Template).where(Template.name==name))).scalars().first()
+        if t:t.html=a+'|'+b
+        else:db.add(Template(name=name,html=a+'|'+b))
         await db.commit()
-    await message.answer(f"Subscription #{sub_id} deleted.")
-
-
-@router.message(Command("toggle"))
-async def toggle_subscription(message: Message):
-    if not is_admin(message):
-        return
-    try:
-        sub_id = int((message.text or "").partition(" ")[2].strip())
-    except ValueError:
-        return await message.answer("Usage: /toggle ID")
+    await m.answer('Saved.')
+@router.message(Command('setjoin'))
+async def setjoin(m):await setv(m,'force_join')
+@router.message(Command('setcard'))
+async def setcard(m):await setv(m,'card')
+async def toggle_setting(m,key,value):
+    if not admin(m):return
     async with Session() as db:
-        sub = await db.get(Subscription, sub_id)
-        if not sub:
-            return await message.answer("Subscription not found.")
-        sub.enabled = not sub.enabled
+        name='__setting__:'+key;t=(await db.execute(select(Template).where(Template.name==name))).scalars().first()
+        if t:t.html=value
+        else:db.add(Template(name=name,html=value))
         await db.commit()
-        state = "ON" if sub.enabled else "OFF"
-    await message.answer(f"Subscription #{sub_id}: {state}")
-
-
-@router.message(Command("nodes"))
-async def node_stats(message: Message):
-    if not is_admin(message):
-        return
-    arg = (message.text or "").partition(" ")[2].strip()
-    try:
-        async with Session() as db:
-            query = select(Node).order_by(Node.id)
-            rows = (await db.execute(query)).scalars().all()
-        if arg:
-            sub_id = int(arg)
-            rows = [x for x in rows if x.subscription_id == sub_id]
-    except ValueError:
-        return await message.answer("Invalid subscription ID.")
-    online = sum(x.status == "online" for x in rows)
-    await message.answer(f"Nodes: {len(rows)}\nOnline: {online}\nOffline: {len(rows) - online}")
-
-
-@router.message(Command("settemplate"))
-async def settemplate(message: Message):
-    if not is_admin(message):
-        return
-    pending[message.from_user.id] = "template"
-    await message.answer("Send complete HTML as the next message or upload an .html file.\nSafe placeholders: {{name}}, {{status}}, {{ping}}, {{protocol}}, {{last_check}}\nSensitive placeholders are not supported.")
-
-
-async def save_template(user_id: int, content: str, message: Message) -> None:
-    if len(content.encode("utf-8")) > MAX_TEMPLATE:
-        return await message.answer("Template is too large (100 KB maximum).")
+    await m.answer('Saved.')
+@router.message(Command('setjoinon'))
+async def joinon(m):await toggle_setting(m,'force_join_enabled','true')
+@router.message(Command('setjoinoff'))
+async def joinoff(m):await toggle_setting(m,'force_join_enabled','false')
+@router.message(Command('settings'))
+async def settings_cmd(m):
+    if not admin(m):return
     async with Session() as db:
-        template = (await db.execute(select(Template).where(Template.name == "default"))).scalars().first()
-        if template is None:
-            db.add(Template(name="default", html=content))
-        else:
-            template.html = content
+        ts=(await db.execute(select(Template).where(Template.name.like('__setting__:%')))).scalars().all()
+    await m.answer('\n'.join(f'{x.name}: {x.html}' for x in ts) or 'No runtime settings.')
+@router.message(Command('settemplate'))
+async def settemplate(m):
+    if not admin(m):return
+    pending[m.from_user.id]=True;await m.answer('Send HTML or .html file. Placeholders: {{name}}, {{status}}, {{ping}}, {{protocol}}, {{last_check}}')
+async def save_template(m,content):
+    if len(content.encode())>MAX_TEMPLATE:return await m.answer('Template too large.')
+    async with Session() as db:
+        t=(await db.execute(select(Template).where(Template.name=='default'))).scalars().first()
+        if t:t.html=content
+        else:db.add(Template(name='default',html=content))
         await db.commit()
-    pending.pop(user_id, None)
-    await message.answer("Template saved.")
-
-
-@router.message(Command("template"))
-async def show_template(message: Message):
-    if not is_admin(message):
-        return
-    async with Session() as db:
-        template = (await db.execute(select(Template).where(Template.name == "default"))).scalars().first()
-    if not template:
-        return await message.answer("No template configured.")
-    content = template.html
-    await message.answer(content[:3500] + ("\n…" if len(content) > 3500 else ""))
-
-
-@router.message(lambda message: message.document is not None)
-async def document_template(message: Message, bot: Bot):
-    if not is_admin(message) or pending.get(message.from_user.id) != "template":
-        return
-    document: Document = message.document
-    if document.file_size and document.file_size > MAX_TEMPLATE:
-        return await message.answer("Template is too large (100 KB maximum).")
-    if document.file_name and not document.file_name.lower().endswith((".html", ".htm")):
-        return await message.answer("Only .html files are accepted.")
-    file = await bot.get_file(document.file_id)
-    buffer = io.BytesIO()
-    await bot.download_file(file.file_path, buffer)
-    try:
-        content = buffer.getvalue().decode("utf-8-sig")
-    except UnicodeDecodeError:
-        return await message.answer("Template must be UTF-8 encoded.")
-    await save_template(message.from_user.id, content, message)
-
-
-@router.message(lambda message: message.text is not None)
-async def text_template(message: Message):
-    if not is_admin(message) or pending.get(message.from_user.id) != "template":
-        return
-    await save_template(message.from_user.id, message.text, message)
-
-
-async def run_bot() -> None:
-    settings = get_settings()
-    if not settings.bot_token:
-        return
-    bot = Bot(settings.bot_token)
-    dispatcher = Dispatcher()
-    dispatcher.include_router(router)
-    await dispatcher.start_polling(bot)
+    pending.pop(m.from_user.id,None);await m.answer('Template saved.')
+@router.message(lambda m:m.document is not None)
+async def document(m:Message,bot:Bot):
+    if not admin(m) or not pending.get(m.from_user.id):return
+    d=m.document
+    if d.file_name and not d.file_name.lower().endswith(('.html','.htm')):return await m.answer('Only HTML files.')
+    f=await bot.get_file(d.file_id);b=__import__('io').BytesIO();await bot.download_file(f.file_path,b);await save_template(m,b.getvalue().decode('utf-8-sig'))
+@router.message(lambda m:m.text is not None)
+async def template_text(m):
+    if admin(m) and pending.get(m.from_user.id):await save_template(m,m.text)
+async def run_bot():
+    s=get_settings()
+    if not s.bot_token:return
+    bot=Bot(s.bot_token);dp=Dispatcher();dp.include_router(router);await dp.start_polling(bot)
