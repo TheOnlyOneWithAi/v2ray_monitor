@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 
@@ -20,11 +21,7 @@ async def sync_loop() -> None:
         try:
             async with _SYNC_LOCK:
                 async with Session() as db:
-                    subs = (
-                        await db.execute(
-                            select(Subscription).where(Subscription.enabled.is_(True))
-                        )
-                    ).scalars().all()
+                    subs = (await db.execute(select(Subscription).where(Subscription.enabled.is_(True)))).scalars().all()
                 for sub in subs:
                     try:
                         await sync_subscription(sub.id)
@@ -34,7 +31,7 @@ async def sync_loop() -> None:
             raise
         except Exception:
             logging.exception("sync loop failed")
-        await asyncio.sleep(max(10, get_settings().sync_interval))
+        await asyncio.sleep(get_settings().sync_interval)
 
 
 async def probe_loop() -> None:
@@ -42,10 +39,8 @@ async def probe_loop() -> None:
     while True:
         try:
             async with Session() as db:
-                nodes = (
-                    await db.execute(select(Node).where(Node.enabled.is_(True)))
-                ).scalars().all()
-            sem = asyncio.Semaphore(10)
+                nodes = (await db.execute(select(Node).where(Node.enabled.is_(True)))).scalars().all()
+            sem = asyncio.Semaphore(get_settings().probe_concurrency)
 
             async def one(node_id: int, encrypted: str, protocol: str) -> None:
                 async with sem:
@@ -54,34 +49,25 @@ async def probe_loop() -> None:
                         probe_node = type("ProbeNode", (), {})()
                         probe_node.config = config
                         probe_node.protocol = protocol
-                        ms = await asyncio.wait_for(
-                            XrayProbe().probe(probe_node),
-                            timeout=get_settings().probe_timeout + 5,
-                        )
+                        ms = await asyncio.wait_for(XrayProbe().probe(probe_node), timeout=get_settings().probe_timeout + 5)
                         status = "online"
                     except asyncio.CancelledError:
                         raise
                     except Exception:
-                        ms = None
-                        status = "offline"
+                        ms, status = None, "offline"
                     async with Session() as db2:
                         row = await db2.get(Node, node_id)
-                        # A concurrent sync may legitimately have removed this node.
                         if row is None:
                             return
                         row.status = status
                         row.latency_ms = ms
                         row.failures = 0 if ms is not None else row.failures + 1
-                        from datetime import datetime, timezone
                         row.last_checked = datetime.now(timezone.utc)
                         await db2.commit()
 
-            await asyncio.gather(
-                *(one(n.id, n.config_encrypted, n.protocol) for n in nodes),
-                return_exceptions=False,
-            )
+            await asyncio.gather(*(one(n.id, n.config_encrypted, n.protocol) for n in nodes))
         except asyncio.CancelledError:
             raise
         except Exception:
             logging.exception("probe loop failed")
-        await asyncio.sleep(max(10, get_settings().probe_interval))
+        await asyncio.sleep(get_settings().probe_interval)
