@@ -1,20 +1,20 @@
 import asyncio, logging
 from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from sqlalchemy import select
 from .config import get_settings
 from .db import Session
 from .models import Subscription, Template
 from .crypto import SecretBox
 from .sync import sync_subscription
-
 router=Router(); pending={}
-def admin(m:Message): return m.from_user and m.from_user.id in get_settings().admins
+def admin(m:Message): return bool(m.from_user and m.from_user.id in get_settings().admins)
+def menu(): return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text='Open Monitor',web_app=WebAppInfo(url=get_settings().webapp_url))]])
 @router.message(Command('start'))
 async def start(m):
     if not admin(m): return await m.answer('Access denied.')
-    await m.answer('/addsub Name | https://...\n/list\n/sync\n/settemplate then send HTML\n/help')
+    await m.answer('/addsub Name | https://...\n/list\n/sync\n/settemplate then send HTML\n/help',reply_markup=menu())
 @router.message(Command('help'))
 async def help_(m):
     if admin(m): await m.answer('/addsub Name | URL\n/list\n/sync\n/settemplate\n/template')
@@ -32,8 +32,7 @@ async def addsub(m):
 @router.message(Command('list'))
 async def list_(m):
     if not admin(m): return
-    async with Session() as db:
-        rows=(await db.execute(select(Subscription))).scalars().all()
+    async with Session() as db: rows=(await db.execute(select(Subscription))).scalars().all()
     await m.answer('\n'.join(f'{x.id}: {x.name} ({"on" if x.enabled else "off"})' for x in rows) or 'No subscriptions.')
 @router.message(Command('sync'))
 async def sync_(m):
@@ -46,7 +45,7 @@ async def sync_(m):
     await m.answer(f'Sync complete: {ok} nodes.')
 @router.message(Command('settemplate'))
 async def settemplate(m):
-    if admin(m): pending[m.from_user.id]='template'; await m.answer('Send the complete HTML now. Allowed placeholders: {{name}}, {{status}}, {{ping}}, {{protocol}}, {{last_check}}')
+    if admin(m): pending[m.from_user.id]='template'; await m.answer('Send complete HTML now. Placeholders: {{name}}, {{status}}, {{ping}}, {{protocol}}, {{last_check}}')
 @router.message()
 async def text(m):
     if not admin(m) or pending.get(m.from_user.id)!='template': return
@@ -54,11 +53,10 @@ async def text(m):
     if len(html)>100_000: return await m.answer('Template too large.')
     async with Session() as db:
         t=(await db.execute(select(Template).where(Template.name=='default'))).scalars().first()
-        if not t: t=Template(name='default',html=html); db.add(t)
+        if not t: db.add(Template(name='default',html=html))
         else: t.html=html
         await db.commit()
     pending.pop(m.from_user.id,None); await m.answer('Template saved.')
-
 async def run_bot():
     s=get_settings()
     if not s.bot_token: return
