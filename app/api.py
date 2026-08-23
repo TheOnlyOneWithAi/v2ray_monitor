@@ -21,10 +21,6 @@ class ConfigCreate(BaseModel): name:str=Field(min_length=1,max_length=200); prot
 class SubscriptionCreate(BaseModel): name:str=Field(min_length=1,max_length=120); url:str=Field(min_length=8,max_length=4096)
 class ProbeReport(BaseModel): probe_token:str; status:str; latency_ms:float|None=None
 
-def seller_auth(token):
-    expected=get_settings().seller_api_token
-    if not expected or not token or not secrets.compare_digest(token,expected): raise HTTPException(401,'Invalid seller API token')
-
 def validate(init_data):
     s=get_settings()
     if not init_data or not s.bot_token: raise HTTPException(401,'Telegram WebApp identity required')
@@ -87,10 +83,8 @@ async def create_subscription(body:SubscriptionCreate,x_telegram_init_data:str|N
         existing=(await db.execute(select(Subscription).where(Subscription.telegram_id==uid,Subscription.enabled.is_(True),Subscription.name==body.name.strip()))).scalar_one_or_none()
         if existing: raise HTTPException(409,'A subscription with this name already exists')
         row=Subscription(telegram_id=uid,name=body.name.strip(),url_encrypted=SecretBox().encrypt(url),enabled=True)
-        db.add(row); await db.commit(); await db.refresh(row)
-        sid=row.id
-    try:
-        imported=await sync_subscription(sid)
+        db.add(row); await db.commit(); await db.refresh(row); sid=row.id
+    try: imported=await sync_subscription(sid)
     except Exception as exc:
         async with Session() as db:
             row=await db.get(Subscription,sid)
@@ -125,7 +119,6 @@ async def delete_subscription(sid:int,x_telegram_init_data:str|None=Header(defau
         await db.commit()
     return {'ok':True}
 
-# Legacy direct-config API is kept for compatibility; the UI now uses subscriptions.
 @app.post('/api/configs')
 async def create_config(body:ConfigCreate,x_telegram_init_data:str|None=Header(default=None)):
     uid=validate(x_telegram_init_data); e,count=await entitlement(uid)
@@ -163,8 +156,13 @@ async def probe_report(body:ProbeReport):
     return {'ok':True}
 
 @app.post('/api/seller/entitlements')
-async def seller_entitlement(body:SellerEntitlement,x_seller_token:str|None=Header(default=None)):
-    seller_auth(x_seller_token); now=datetime.now(timezone.utc); expiry=now+timedelta(days=body.days)
+async def seller_entitlement(body:SellerEntitlement):
+    """Internal local integration endpoint. No Seller API token is required.
+
+    The installer configures Seller to call Monitor through 127.0.0.1, so
+    this endpoint is intentionally not a public credential-based API.
+    """
+    now=datetime.now(timezone.utc); expiry=now+timedelta(days=body.days)
     async with Session() as db:
         row=(await db.execute(select(MonitorEntitlement).where(MonitorEntitlement.telegram_id==body.telegram_id))).scalar_one_or_none()
         if row: row.max_configs=body.max_configs; row.expires_at=expiry; row.active=True
@@ -175,7 +173,7 @@ async def seller_entitlement(body:SellerEntitlement,x_seller_token:str|None=Head
 @app.get('/api/nodes')
 async def nodes():
     async with Session() as db: rows=(await db.execute(select(Node).where(Node.enabled.is_(True)).order_by(Node.id))).scalars().all()
-    return {'nodes':[{'id':n.id,'name':n.name,'protocol':n.protocol,'status':n.status,'latency_ms':n.latency_ms,'last_checked':n.last_checked.isoformat() if n.last_checked else None} for n in rows]}
+    return {'nodes':[{'id':n.id,'name':n.name,'protocol':n.protocol,'status':n.status,'latency_ms':n.latency_ms,'last_checked':n.last_checked.isoformat() if n.last_checked else None} for n in rows]
 
 @app.get('/api/view',response_class=HTMLResponse)
 async def view():
