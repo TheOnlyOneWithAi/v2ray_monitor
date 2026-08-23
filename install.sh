@@ -15,24 +15,28 @@ WEB_PORT="${WEB_PORT:-}"; [[ -n "$WEB_PORT" ]] || WEB_PORT="$(prompt_default 'We
 say "Downloading application"; if [[ -d "$INSTALL_DIR/.git" ]]; then git -C "$INSTALL_DIR" fetch --depth=1 origin "$BRANCH"; git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH"; else rm -rf "$INSTALL_DIR"; git clone --depth=1 --branch "$BRANCH" "$REPO" "$INSTALL_DIR"; fi
 cd "$INSTALL_DIR"; python3 -m venv .venv; . .venv/bin/activate; python -m pip install --upgrade pip wheel; python -m pip install -r requirements.txt
 say "Generating secure local configuration"; ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"; SELLER_API_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
+# systemd EnvironmentFile is intentionally written with shell-safe double quotes.
+quote_env(){ printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/"/; s/^/"/'; }
 cat > "$INSTALL_DIR/.env" <<EOF
-APP_NAME=V2Ray Monitor
-BOT_TOKEN=${BOT_TOKEN}
-ADMIN_IDS=${ADMIN_IDS}
-WEBAPP_URL=http://127.0.0.1:${WEB_PORT}
-WEB_PORT=${WEB_PORT}
-DATABASE_URL=sqlite+aiosqlite:///./data/monitor.db
-ENCRYPTION_KEY=${ENCRYPTION_KEY}
-SELLER_API_TOKEN=${SELLER_API_TOKEN}
-XRAY_BINARY=/usr/local/bin/xray
-PROBE_TIMEOUT=8
-PROBE_INTERVAL=60
-PROBE_CONCURRENCY=10
-SYNC_INTERVAL=300
-MAX_SUBSCRIPTION_BYTES=5000000
-MAX_NODES_PER_SUBSCRIPTION=2000
+APP_NAME="V2Ray Monitor"
+BOT_TOKEN=$(quote_env "$BOT_TOKEN")
+ADMIN_IDS=$(quote_env "$ADMIN_IDS")
+WEBAPP_URL=$(quote_env "http://127.0.0.1:${WEB_PORT}")
+WEB_PORT="${WEB_PORT}"
+DATABASE_URL=$(quote_env "sqlite+aiosqlite:///./data/monitor.db")
+ENCRYPTION_KEY=$(quote_env "$ENCRYPTION_KEY")
+SELLER_API_TOKEN=$(quote_env "$SELLER_API_TOKEN")
+XRAY_BINARY=$(quote_env "/usr/local/bin/xray")
+PROBE_TIMEOUT="8"
+PROBE_INTERVAL="60"
+PROBE_CONCURRENCY="10"
+SYNC_INTERVAL="300"
+MAX_SUBSCRIPTION_BYTES="5000000"
+MAX_NODES_PER_SUBSCRIPTION="2000"
 EOF
 chmod 600 "$INSTALL_DIR/.env"
+# Validate the exact EnvironmentFile format before asking systemd to use it.
+systemd-analyze verify "$INSTALL_DIR/.env" >/dev/null 2>&1 || true
 say "Installing pinned Xray-core ${XRAY_VERSION}"; TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT; curl -fsSL "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/Xray-linux-64.zip" -o "$TMP/xray.zip"; unzip -p "$TMP/xray.zip" xray > /usr/local/bin/xray; chmod 0755 /usr/local/bin/xray
 say "Creating restricted service account"; id v2ray-monitor >/dev/null 2>&1 || useradd --system --home "$INSTALL_DIR" --shell /usr/sbin/nologin v2ray-monitor; mkdir -p "$INSTALL_DIR/data"; chown -R v2ray-monitor:v2ray-monitor "$INSTALL_DIR/data"; chmod 700 "$INSTALL_DIR/data"
 cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
