@@ -19,8 +19,19 @@ say "Installing prerequisites"
 apt-get update -y
 apt-get install -y --no-install-recommends ca-certificates curl git python3 python3-venv python3-pip unzip
 
-BOT_TOKEN="$(prompt_required 'Telegram Bot Token')"
-ADMIN_IDS="$(prompt_required 'Admin Telegram ID(s), comma-separated')"
+# Backward-compatible admin variable handling. Older installer snippets used
+# ADMINS; the application itself uses ADMIN_IDS. Never expand an unset variable
+# while `set -u` is active.
+BOT_TOKEN="${BOT_TOKEN:-}"
+if [[ -z "$BOT_TOKEN" ]]; then
+  BOT_TOKEN="$(prompt_required 'Telegram Bot Token')"
+fi
+
+ADMIN_IDS="${ADMIN_IDS:-${ADMINS:-}}"
+if [[ -z "$ADMIN_IDS" ]]; then
+  ADMIN_IDS="$(prompt_required 'Admin Telegram ID(s), comma-separated')"
+fi
+
 read -r -p "Web port [8000]: " WEB_PORT
 WEB_PORT="${WEB_PORT:-8000}"
 [[ "$WEB_PORT" =~ ^[0-9]+$ ]] && ((WEB_PORT>=1 && WEB_PORT<=65535)) || fail "Invalid web port"
