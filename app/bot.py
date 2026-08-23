@@ -5,7 +5,7 @@ import logging
 from aiogram import Bot, Dispatcher, Router
 from aiogram.filters import Command
 from aiogram.types import Document, InlineKeyboardButton, InlineKeyboardMarkup, Message, WebAppInfo
-from sqlalchemy import delete, select
+from sqlalchemy import select
 
 from .config import get_settings
 from .crypto import SecretBox
@@ -23,9 +23,7 @@ def is_admin(message: Message) -> bool:
 
 
 def menu() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Open Monitor", web_app=WebAppInfo(url=get_settings().webapp_url))]]
-    )
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Open Monitor", web_app=WebAppInfo(url=get_settings().webapp_url))]])
 
 
 async def denied(message: Message) -> None:
@@ -36,23 +34,13 @@ async def denied(message: Message) -> None:
 async def start(message: Message):
     if not is_admin(message):
         return await denied(message)
-    await message.answer(
-        "V2Ray Monitor admin\n\n"
-        "/addsub Name | https://subscription\n"
-        "/list\n/sync [id]\n/delsub ID\n/toggle ID\n/nodes [id]\n"
-        "/settemplate (then send HTML or a .html file)\n/template\n/help",
-        reply_markup=menu(),
-    )
+    await message.answer("V2Ray Monitor admin\n\n/addsub Name | https://subscription\n/list\n/sync [id]\n/delsub ID\n/toggle ID\n/nodes [id]\n/settemplate (then send HTML or a .html file)\n/template\n/help", reply_markup=menu())
 
 
 @router.message(Command("help"))
 async def help_command(message: Message):
     if is_admin(message):
-        await message.answer(
-            "/addsub Name | HTTPS URL\n/list\n/sync [subscription_id]\n"
-            "/delsub ID\n/toggle ID\n/nodes [subscription_id]\n"
-            "/settemplate\n/template"
-        )
+        await message.answer("/addsub Name | HTTPS URL\n/list\n/sync [subscription_id]\n/delsub ID\n/toggle ID\n/nodes [subscription_id]\n/settemplate\n/template")
 
 
 @router.message(Command("addsub"))
@@ -66,9 +54,9 @@ async def addsub(message: Message):
     if not name or len(name) > 120 or not url.startswith("https://"):
         return await message.answer("A name and an HTTPS URL are required.")
     try:
-        SecretBox()  # fail before creating a database record if encryption is misconfigured
+        box = SecretBox()
         async with Session() as db:
-            sub = Subscription(name=name, url_encrypted=SecretBox().encrypt(url))
+            sub = Subscription(name=name, url_encrypted=box.encrypt(url))
             db.add(sub)
             await db.commit()
             sub_id = sub.id
@@ -170,11 +158,7 @@ async def settemplate(message: Message):
     if not is_admin(message):
         return
     pending[message.from_user.id] = "template"
-    await message.answer(
-        "Send complete HTML as the next message or upload an .html file.\n"
-        "Safe placeholders: {{name}}, {{status}}, {{ping}}, {{protocol}}, {{last_check}}\n"
-        "Sensitive placeholders are not supported."
-    )
+    await message.answer("Send complete HTML as the next message or upload an .html file.\nSafe placeholders: {{name}}, {{status}}, {{ping}}, {{protocol}}, {{last_check}}\nSensitive placeholders are not supported.")
 
 
 async def save_template(user_id: int, content: str, message: Message) -> None:
@@ -199,20 +183,8 @@ async def show_template(message: Message):
         template = (await db.execute(select(Template).where(Template.name == "default"))).scalars().first()
     if not template:
         return await message.answer("No template configured.")
-    # Never echo secrets; the template itself contains only admin-authored HTML.
     content = template.html
-    if len(content) > 3500:
-        content = content[:3500] + "\n…"
-    await message.answer(content)
-
-
-@router.message()
-async def text_template(message: Message):
-    if not is_admin(message) or pending.get(message.from_user.id) != "template":
-        return
-    if not message.text:
-        return
-    await save_template(message.from_user.id, message.text, message)
+    await message.answer(content[:3500] + ("\n…" if len(content) > 3500 else ""))
 
 
 @router.message(lambda message: message.document is not None)
@@ -227,7 +199,18 @@ async def document_template(message: Message, bot: Bot):
     file = await bot.get_file(document.file_id)
     buffer = io.BytesIO()
     await bot.download_file(file.file_path, buffer)
-    await save_template(message.from_user.id, buffer.getvalue().decode("utf-8-sig"), message)
+    try:
+        content = buffer.getvalue().decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return await message.answer("Template must be UTF-8 encoded.")
+    await save_template(message.from_user.id, content, message)
+
+
+@router.message(lambda message: message.text is not None)
+async def text_template(message: Message):
+    if not is_admin(message) or pending.get(message.from_user.id) != "template":
+        return
+    await save_template(message.from_user.id, message.text, message)
 
 
 async def run_bot() -> None:
