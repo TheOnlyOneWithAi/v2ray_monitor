@@ -74,6 +74,12 @@ async def delete_config(cid:int,x_telegram_init_data:str|None=Header(default=Non
         if not row or row.telegram_id!=uid:raise HTTPException(404,'Config not found')
         row.enabled=False;await db.commit()
     return {'ok':True}
+@app.get('/api/probe/config/{token}')
+async def probe_config(token:str):
+    async with Session() as db:
+        row=(await db.execute(select(MonitorConfig).where(MonitorConfig.probe_token==token,MonitorConfig.enabled.is_(True)))).scalar_one_or_none()
+        if not row:raise HTTPException(401,'Invalid probe token')
+        return {'id':row.id,'name':row.name,'protocol':row.protocol,'config':json.loads(SecretBox().decrypt(row.config_encrypted))}
 @app.post('/api/probe/report')
 async def probe_report(body:ProbeReport):
     async with Session() as db:
