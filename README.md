@@ -1,61 +1,82 @@
 # v2ray_monitor
 
-Telegram-administered VLESS/VMess subscription monitor using Xray-core.
+Telegram-administered VLESS/VMess subscription monitor powered by Xray-core.
 
 ## Security model
 
 - Subscription URLs and parsed node credentials are encrypted at rest with Fernet.
-- Public `/api/nodes` exposes only node id, display name, protocol, status and latency.
+- Public `/api/nodes` exposes only `id`, display name, protocol, status, latency and last-check time.
 - Raw VLESS/VMess links, UUIDs, passwords, SNI, Reality keys and subscription URLs are never returned by the public API.
-- Subscription fetching requires HTTPS and blocks private, loopback, link-local, reserved and multicast destinations; redirects are disabled.
-- Probe configuration exists only in memory/temp files and is deleted after each Xray process exits.
-- User-visible names are HTML escaped by the built-in UI.
-- CI compiles the project and runs parser tests.
+- There is no public probe endpoint: probing happens only in the background worker.
+- Subscription fetching requires HTTPS, validates DNS destinations and blocks private, loopback, link-local, reserved and multicast addresses; redirects are disabled.
+- Xray probe configs are temporary and are deleted with their temporary directory after each probe.
+- Logs intentionally contain node/subscription IDs rather than raw credentials or subscription URLs.
+- The public UI escapes node data before inserting it into the built-in page.
+- Docker runs as an unprivileged user with dropped capabilities and `no-new-privileges`.
 
-## What it does
+## Features
 
-1. Admin sends a subscription URL to the Telegram bot.
-2. The server fetches and parses VLESS and VMess entries.
-3. Node credentials are encrypted and stored.
-4. Xray-core is started per probe and performs a real proxied HTTPS request.
-5. Results are stored as latency/status.
-6. Normal users see only names and health information.
-7. Admin can replace the HTML template from Telegram.
+- Telegram admin bot for adding, syncing, deleting and enabling/disabling subscriptions.
+- VLESS and VMess parsing, including common WS/gRPC/HTTPUpgrade/XHTTP/TLS/REALITY settings.
+- Configurable node limits, probe timeout, probe interval and probe concurrency.
+- Stable node records so a subscription refresh does not unnecessarily erase latency history.
+- Xray-core real proxied HTTPS health checks.
+- Responsive public monitor showing only names/protocol/status/latency.
+- Admin-controlled HTML template, either pasted into Telegram or uploaded as UTF-8 `.html`.
+- Safe template placeholders: `{{name}}`, `{{status}}`, `{{ping}}`, `{{protocol}}`, `{{last_check}}`.
+- No sensitive template placeholders such as `{{config}}`, `{{url}}`, `{{uuid}}` or `{{subscription}}`.
+- Health endpoint at `/health` and Docker healthcheck.
+- CI runs compile checks, import checks, parser tests and a Docker build.
 
-## Important limitation
+## Important client-network limitation
 
-A normal browser cannot safely run arbitrary Xray VLESS/VMess probes itself. This implementation therefore measures from the monitoring server. If you need measurements from each user's own ISP/IP, a separate trusted local Xray agent or a client application is required; the web page must not receive the node credentials.
+A normal browser cannot run arbitrary VLESS/VMess/Xray probes itself. Browsers do not provide the raw TCP/UDP capabilities needed for arbitrary Xray transports, and sending the node credentials to the browser would defeat the no-leak requirement. Therefore the built-in monitor measures from the monitoring server.
+
+If measurements must originate from each user's own ISP/IP, the safe architecture is an optional trusted local Xray agent or native client. That agent can perform the probe locally while the web UI receives only `{name,status,latency}`. The current server never sends the node credentials to ordinary web users.
 
 ## Setup
 
-Generate a key:
+Generate a Fernet key:
 
 ```bash
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-Create `.env` from `.env.example`, set `ENCRYPTION_KEY`, `BOT_TOKEN`, and `ADMIN_IDS` (comma-separated Telegram numeric IDs), then:
+Create `.env` from `.env.example` and set:
+
+- `BOT_TOKEN` — Telegram bot token.
+- `ADMIN_IDS` — comma-separated numeric Telegram user IDs allowed to administer the bot.
+- `ENCRYPTION_KEY` — the generated Fernet key.
+- `WEBAPP_URL` — the public HTTPS URL used by the Telegram Web App button.
+
+Then:
 
 ```bash
 docker compose up -d --build
 ```
 
-Open port 8000 behind HTTPS/reverse proxy. The bot accepts:
+Put the service behind HTTPS/reverse proxy before exposing it publicly. Port 8000 is the application port.
 
-- `/addsub Name | https://example.com/sub`
-- `/list`
-- `/sync`
-- `/settemplate` followed by HTML
+## Bot commands
 
-Template placeholders:
+```text
+/start
+/help
+/addsub Name | https://example.com/sub
+/list
+/sync [subscription_id]
+/delsub ID
+/toggle ID
+/nodes [subscription_id]
+/settemplate
+/template
+```
 
-`{{name}}`, `{{status}}`, `{{ping}}`, `{{protocol}}`, `{{last_check}}`
-
-There is deliberately no `{{config}}`, `{{url}}`, `{{uuid}}` or `{{subscription}}` placeholder.
+After `/settemplate`, send the HTML directly or upload a `.html`/`.htm` UTF-8 file. Maximum template size is 100 KB.
 
 ## Xray
 
-The Docker image pins Xray-core v26.3.27, an official Xray release. Update the `XRAY_VERSION` build argument deliberately after testing rather than silently tracking a moving latest tag.
+The Docker image pins an Xray-core release through `ARG XRAY_VERSION=26.3.27`. Upgrade deliberately and let CI validate the image rather than silently tracking `latest`.
 
 ## Development
 
@@ -65,5 +86,6 @@ python -m venv .venv
 pip install -r requirements.txt
 export ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"
 pytest -q
+python -m compileall -q app tests
 python -m app.main
 ```
