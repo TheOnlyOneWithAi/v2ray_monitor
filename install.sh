@@ -9,21 +9,21 @@ prompt_required(){ local label="$1" value=""; while [[ -z "$value" ]]; do printf
 prompt_default(){ local label="$1" default="$2" value=""; printf '%s [%s]: ' "$label" "$default" > /dev/tty; value="$(tty_read)"; printf '%s' "${value:-$default}"; }
 export DEBIAN_FRONTEND=noninteractive
 say "Installing prerequisites"; apt-get update -y; apt-get install -y --no-install-recommends ca-certificates curl git python3 python3-venv python3-pip unzip
-BOT_TOKEN="${BOT_TOKEN:-}"; [[ -n "$BOT_TOKEN" ]] || BOT_TOKEN="$(prompt_required 'Telegram Bot Token')"
+BOT_TOKEN="${BOT_TOKEN:-}"; [[ -n "$BOT_TOKEN" ]] || BOT_TOKEN="$(prompt_required 'Monitor Telegram Bot Token')"
 ADMIN_IDS="${ADMIN_IDS:-${ADMINS:-}}"; [[ -n "$ADMIN_IDS" ]] || ADMIN_IDS="$(prompt_required 'Admin Telegram ID(s), comma-separated')"
 WEB_PORT="${WEB_PORT:-}"; [[ -n "$WEB_PORT" ]] || WEB_PORT="$(prompt_default 'Web port' '8000')"; [[ "$WEB_PORT" =~ ^[0-9]+$ ]] && ((WEB_PORT>=1 && WEB_PORT<=65535)) || fail "Invalid web port: ${WEB_PORT:-<empty>}"
-say "Downloading application"; if [[ -d "$INSTALL_DIR/.git" ]]; then git -C "$INSTALL_DIR" fetch --depth=1 origin "$BRANCH"; git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH"; else rm -rf "$INSTALL_DIR"; git clone --depth=1 --branch "$BRANCH" "$REPO" "$INSTALL_DIR"; fi
+say "Downloading application"; if [[ -d "$INSTALL_DIR/.git" ]]; then git -C "$INSTALL_DIR" config --local --add safe.directory "$INSTALL_DIR" 2>/dev/null || true; git -C "$INSTALL_DIR" fetch --depth=1 origin "$BRANCH"; git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH"; else rm -rf "$INSTALL_DIR"; git clone --depth=1 --branch "$BRANCH" "$REPO" "$INSTALL_DIR"; fi
 cd "$INSTALL_DIR"; python3 -m venv .venv; . .venv/bin/activate; python -m pip install --upgrade pip wheel; python -m pip install -r requirements.txt
 say "Generating secure local configuration"; ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"; SELLER_API_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
-# systemd EnvironmentFile is intentionally written with shell-safe double quotes.
 quote_env(){ printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/$/"/; s/^/"/'; }
+mkdir -p "$INSTALL_DIR/data"
 cat > "$INSTALL_DIR/.env" <<EOF
 APP_NAME="V2Ray Monitor"
 BOT_TOKEN=$(quote_env "$BOT_TOKEN")
 ADMIN_IDS=$(quote_env "$ADMIN_IDS")
 WEBAPP_URL=$(quote_env "http://127.0.0.1:${WEB_PORT}")
 WEB_PORT="${WEB_PORT}"
-DATABASE_URL=$(quote_env "sqlite+aiosqlite:///./data/monitor.db")
+DATABASE_URL=$(quote_env "sqlite+aiosqlite:///${INSTALL_DIR}/data/monitor.db")
 ENCRYPTION_KEY=$(quote_env "$ENCRYPTION_KEY")
 SELLER_API_TOKEN=$(quote_env "$SELLER_API_TOKEN")
 XRAY_BINARY=$(quote_env "/usr/local/bin/xray")
@@ -35,10 +35,9 @@ MAX_SUBSCRIPTION_BYTES="5000000"
 MAX_NODES_PER_SUBSCRIPTION="2000"
 EOF
 chmod 600 "$INSTALL_DIR/.env"
-# Validate the exact EnvironmentFile format before asking systemd to use it.
-systemd-analyze verify "$INSTALL_DIR/.env" >/dev/null 2>&1 || true
 say "Installing pinned Xray-core ${XRAY_VERSION}"; TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT; curl -fsSL "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_VERSION}/Xray-linux-64.zip" -o "$TMP/xray.zip"; unzip -p "$TMP/xray.zip" xray > /usr/local/bin/xray; chmod 0755 /usr/local/bin/xray
-say "Creating restricted service account"; id v2ray-monitor >/dev/null 2>&1 || useradd --system --home "$INSTALL_DIR" --shell /usr/sbin/nologin v2ray-monitor; mkdir -p "$INSTALL_DIR/data"; chown -R v2ray-monitor:v2ray-monitor "$INSTALL_DIR/data"; chmod 700 "$INSTALL_DIR/data"
+say "Creating restricted service account"; id v2ray-monitor >/dev/null 2>&1 || useradd --system --home "$INSTALL_DIR" --shell /usr/sbin/nologin v2ray-monitor
+chown -R v2ray-monitor:v2ray-monitor "$INSTALL_DIR/data"; chmod 700 "$INSTALL_DIR/data"; chown v2ray-monitor:v2ray-monitor "$INSTALL_DIR/.env"; chmod 600 "$INSTALL_DIR/.env"
 cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
 [Unit]
 Description=V2Ray Monitor
@@ -50,9 +49,12 @@ User=v2ray-monitor
 Group=v2ray-monitor
 WorkingDirectory=${INSTALL_DIR}
 EnvironmentFile=${INSTALL_DIR}/.env
+Environment=PYTHONUNBUFFERED=1
 ExecStart=${INSTALL_DIR}/.venv/bin/python -m app.main
 Restart=always
 RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
