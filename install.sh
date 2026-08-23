@@ -3,12 +3,15 @@ set -Eeuo pipefail
 APP_NAME="v2ray-monitor"; INSTALL_DIR="/opt/v2ray-monitor"; SERVICE_NAME="v2ray-monitor"; REPO="https://github.com/TheOnlyOneWithAi/v2ray_monitor.git"; BRANCH="main"; XRAY_VERSION="26.3.27"
 [[ "${EUID}" -eq 0 ]] || { echo "Please run as root."; exit 1; }
 command -v apt-get >/dev/null 2>&1 || { echo "This installer supports Debian/Ubuntu (apt) only." >&2; exit 1; }
-say(){ printf '\n[%s] %s\n' "$APP_NAME" "$1"; }; fail(){ echo "ERROR: $1" >&2; exit 1; }; prompt_required(){ local label="$1" value=""; while [[ -z "$value" ]]; do read -r -p "$label: " value; done; printf '%s' "$value"; }
+say(){ printf '\n[%s] %s\n' "$APP_NAME" "$1"; }; fail(){ echo "ERROR: $1" >&2; exit 1; }
+tty_read(){ local v=""; IFS= read -r v < /dev/tty || true; printf '%s' "$v"; }
+prompt_required(){ local label="$1" value=""; while [[ -z "$value" ]]; do printf '%s: ' "$label" > /dev/tty; value="$(tty_read)"; done; printf '%s' "$value"; }
+prompt_default(){ local label="$1" default="$2" value=""; printf '%s [%s]: ' "$label" "$default" > /dev/tty; value="$(tty_read)"; printf '%s' "${value:-$default}"; }
 export DEBIAN_FRONTEND=noninteractive
 say "Installing prerequisites"; apt-get update -y; apt-get install -y --no-install-recommends ca-certificates curl git python3 python3-venv python3-pip unzip
 BOT_TOKEN="${BOT_TOKEN:-}"; [[ -n "$BOT_TOKEN" ]] || BOT_TOKEN="$(prompt_required 'Telegram Bot Token')"
 ADMIN_IDS="${ADMIN_IDS:-${ADMINS:-}}"; [[ -n "$ADMIN_IDS" ]] || ADMIN_IDS="$(prompt_required 'Admin Telegram ID(s), comma-separated')"
-read -r -p "Web port [8000]: " WEB_PORT; WEB_PORT="${WEB_PORT:-8000}"; [[ "$WEB_PORT" =~ ^[0-9]+$ ]] && ((WEB_PORT>=1 && WEB_PORT<=65535)) || fail "Invalid web port"
+WEB_PORT="${WEB_PORT:-}"; [[ -n "$WEB_PORT" ]] || WEB_PORT="$(prompt_default 'Web port' '8000')"; [[ "$WEB_PORT" =~ ^[0-9]+$ ]] && ((WEB_PORT>=1 && WEB_PORT<=65535)) || fail "Invalid web port: ${WEB_PORT:-<empty>}"
 say "Downloading application"; if [[ -d "$INSTALL_DIR/.git" ]]; then git -C "$INSTALL_DIR" fetch --depth=1 origin "$BRANCH"; git -C "$INSTALL_DIR" reset --hard "origin/$BRANCH"; else rm -rf "$INSTALL_DIR"; git clone --depth=1 --branch "$BRANCH" "$REPO" "$INSTALL_DIR"; fi
 cd "$INSTALL_DIR"; python3 -m venv .venv; . .venv/bin/activate; python -m pip install --upgrade pip wheel; python -m pip install -r requirements.txt
 say "Generating secure local configuration"; ENCRYPTION_KEY="$(python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')"; SELLER_API_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(48))')"
