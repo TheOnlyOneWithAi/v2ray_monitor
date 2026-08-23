@@ -43,26 +43,33 @@ cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<EOF
 Description=V2Ray Monitor
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
 [Service]
 Type=simple
 User=v2ray-monitor
 Group=v2ray-monitor
 WorkingDirectory=${INSTALL_DIR}
-EnvironmentFile=${INSTALL_DIR}/.env
 Environment=PYTHONUNBUFFERED=1
 ExecStart=${INSTALL_DIR}/.venv/bin/python -m app.main
 Restart=always
 RestartSec=5
-StartLimitIntervalSec=60
-StartLimitBurst=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=${INSTALL_DIR}/data
+
 [Install]
 WantedBy=multi-user.target
 EOF
-systemctl daemon-reload; systemctl enable --now "$SERVICE_NAME"; sleep 2
+# Validate the unit before touching the running service.
+systemd-analyze verify "/etc/systemd/system/${SERVICE_NAME}.service" || fail "Generated systemd unit failed validation"
+systemctl daemon-reload
+systemctl enable "$SERVICE_NAME" >/dev/null
+systemctl reset-failed "$SERVICE_NAME" 2>/dev/null || true
+systemctl restart "$SERVICE_NAME"
+sleep 2
 if ! systemctl is-active --quiet "$SERVICE_NAME"; then journalctl -u "$SERVICE_NAME" --no-pager -n 80 || true; fail "Service failed to start"; fi
 say "Installation complete"; echo "Web: http://SERVER-IP:${WEB_PORT}"; echo "Seller API token: ${SELLER_API_TOKEN}"; echo "Status: systemctl status ${SERVICE_NAME}"; echo "Logs: journalctl -u ${SERVICE_NAME} -f"
