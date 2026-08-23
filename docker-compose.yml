@@ -1,0 +1,16 @@
+services:
+  monitor:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - monitor_data:/app/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    tmpfs:
+      - /tmp
+volumes:
+  monitor_data:
